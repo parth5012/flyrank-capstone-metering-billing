@@ -14,7 +14,7 @@ This capstone is a mini version of a real $B category: usage-based billing for S
 
 ## 2. What each teaches you
 - **Stripe:** Checkout + webhooks + `whsec_` verify pattern you clone in Phase 3. Limit: aggregation logic stays in your code.
-- **Orb:** Why we decouple metering from invoicing - change price without re-plumbing. Your `config/pricing.js` is a toy rate-card.
+- **Orb:** Why we decouple metering from invoicing - change price without re-plumbing. Your `src/config/pricing.ts` is a toy rate-card.
 - **Metronome:** Commits/drawdowns, `effective_at` accounting. Your stretch `proration + reconciliation job` maps here.
 - **Lago:** Closest to your build - `transaction_id` dedup = your `idempotency_key`, wallets = credits, Postgres self-host.
 - **Consolidation 2026:** Metering pulled into payment rails. Lago left as neutral/self-host option.

@@ -9,7 +9,7 @@
 - [ ] Boundary 1000/1000 allows, 1001 -> 429/402 with message. Proof: `TODO`
 
 ## Cost
-- [ ] Pricing constants in `config/pricing.js` + cached/reasoning math correct. Proof: `TODO: unit test output`
+- [ ] Pricing constants in `src/config/pricing.ts` + cached/reasoning math correct. Proof: `TODO: unit test output`
 - [ ] GET /usage matches constants. Proof: `TODO`
 
 ## Stripe

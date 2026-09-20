@@ -29,7 +29,7 @@ Background job (separate from request path, retries + alert log): nightly `recon
 DB `UNIQUE(idempotency_key)`. Flow: `INSERT usage_events ... ON CONFLICT DO NOTHING RETURNING` - conflict = return original stored result, no new event, no cost change. Same for Stripe: `INSERT stripe_events(event_id) ON CONFLICT DO NOTHING` - replay = ignored. Proof for EVIDENCE: send same curl twice, show 1 row in DB.
 
 ## 6. Quota + cost rules
-Check `current + requested > limit` before write. At 999/1000 allow, at 1000 allow per documented rule (last allowed), 1001 -> 429. Cost in `config/pricing.js`: `INPUT=0.15c/1k, CACHED=0.0375c/1k, OUTPUT=0.6c/1k, reasoning billed as output`. Rollup sums per category, never adds raw tokens.
+Check `current + requested > limit` before write. At 999/1000 allow, at 1000 allow per documented rule (last allowed), 1001 -> 429. Cost in `src/config/pricing.ts`: `INPUT=0.15c/1k, CACHED=0.0375c/1k, OUTPUT=0.6c/1k, reasoning billed as output`. Rollup sums per category, never adds raw tokens.
 
 ## 7. Explicit non-goal
 No invoicing, proration, or overage billing in core. Simulated tokens only, no LLM call. Stripe test mode only, secrets in `.env`.
