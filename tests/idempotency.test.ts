@@ -51,7 +51,21 @@ function makeMemoryUsage() {
     byKey.set(input.idempotencyKey, event);
     return { event, inserted: true };
   }
-  return { insert, count: () => byKey.size, byKey };
+  async function findExisting(tenantId: string, key: string): Promise<UsageEvent | null> {
+    const e = byKey.get(key);
+    return e && e.tenant_id === tenantId ? e : null;
+  }
+  async function countApiUsage(tenantId: string): Promise<number> {
+    let n = 0;
+    for (const e of byKey.values()) if (e.tenant_id === tenantId) n += 1;
+    return n;
+  }
+  async function sumTokenUsage(tenantId: string): Promise<number> {
+    let n = 0;
+    for (const e of byKey.values()) if (e.tenant_id === tenantId && e.type === 'ai_token') n += e.qty;
+    return n;
+  }
+  return { insert, findExisting, countApiUsage, sumTokenUsage, count: () => byKey.size, byKey };
 }
 
 describe('MeterService.record idempotent insert (P2-T3)', () => {
@@ -126,6 +140,12 @@ describe('POST /generate idempotent record (P2-T3, HTTP)', () => {
           ? { id, name: 'Demo', plan: 'free' as const, stripe_customer_id: null, status: 'active', created_at: '' }
           : null,
       insert: mem.insert,
+      // P2-T4 quota seam: counts derive from the same memory store so dedup
+      // tests stay under quota (few rows << 1000 Free limit).
+      findExisting: mem.findExisting,
+      countApiUsage: mem.countApiUsage,
+      sumTokenUsage: mem.sumTokenUsage,
+      getPlanLimits: async () => ({ apiLimit: 1000, tokenLimit: 100000 }),
     });
     const app = createApp();
     server = app.listen(0);

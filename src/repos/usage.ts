@@ -82,3 +82,14 @@ export async function countUsageByTenant(tenantId: string): Promise<number> {
   );
   return Number(rows[0]?.count ?? 0);
 }
+
+// Token quota (P2-T4): sum of ai_token qty scoped to tenant. api_limit is
+// COUNT(*) (every request = 1 event); token_limit is SUM(qty) over ai_token.
+export async function sumTokensByTenant(tenantId: string): Promise<number> {
+  const { rows } = await query<{ sum: string | null }>(
+    `SELECT COALESCE(SUM(qty), 0)::text AS sum FROM usage_events
+      WHERE tenant_id = $1 AND type = 'ai_token'`,
+    [tenantId],
+  );
+  return Number(rows[0]?.sum ?? 0);
+}

@@ -73,3 +73,13 @@ export async function listPlans(): Promise<Plan[]> {
   const { rows } = await query<Plan>(`SELECT ${PLAN_COLS} FROM plans ORDER BY id`);
   return rows;
 }
+
+// Plan limits for quota (P2-T4): Pro limits read from plans table, never
+// hardcoded at the route. token_limit is BIGINT — node-postgres returns it
+// as string, callers coerce with Number().
+export async function findPlan(planId: string): Promise<Plan | null> {
+  const { rows } = await query<Plan>(`SELECT ${PLAN_COLS} FROM plans WHERE id = $1`, [
+    planId,
+  ]);
+  return rows[0] ?? null;
+}
