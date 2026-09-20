@@ -1,0 +1,10 @@
+# Evaluator manifest - Section 10
+run: docker compose up --build
+seed: npm run seed
+test: npm test
+base_url: http://localhost:3000
+endpoints:
+  billable: POST /generate
+  usage: GET /usage?tenant_id=demo-tenant
+  checkout: POST /checkout
+  webhook: POST /webhooks/stripe

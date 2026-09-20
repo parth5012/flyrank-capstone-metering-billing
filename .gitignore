@@ -1,0 +1,13 @@
+# Node
+node_modules/
+dist/
+# Env - never commit secrets (instant fail per brief Section 10)
+.env
+# Docker / DB
+postgres-data/
+# OS
+.DS_Store
+Thumbs.db
+# Logs
+*.log
+.tmp/
