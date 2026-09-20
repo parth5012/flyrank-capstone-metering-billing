@@ -40,6 +40,12 @@ before(async () => {
       },
       inserted: true,
     }),
+    // P2-T4 quota seam: zero usage + Free limits so validation valid-path
+    // requests stay under quota (0 + 1 <= 1000); no replay state here.
+    findExisting: async () => null,
+    countApiUsage: async () => 0,
+    sumTokenUsage: async () => 0,
+    getPlanLimits: async () => ({ apiLimit: 1000, tokenLimit: 100000 }),
   });
   const app = createApp();
   server = app.listen(0);
