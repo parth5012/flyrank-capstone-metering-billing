@@ -1,6 +1,8 @@
 // P2-T2 validation tests: 4xx never 500 from /generate. No DB, no Stripe.
 // Covers: missing tenant, invalid/missing idempotency-key (uuidv4), negative /
-// float tokens, unknown tenant -> 4xx; valid -> 501 (P2-T3/T4 build on top).
+// float tokens, unknown tenant -> 4xx; valid -> 200 via P2-T3 meter record
+// (quota deferred to P2-T4). Route deps are in-memory doubles (no Docker DB;
+// live-DB proof deferred to P2-T7).
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
@@ -8,11 +10,37 @@ import { randomUUID } from 'node:crypto';
 import type { AddressInfo } from 'node:net';
 import type { Server } from 'node:http';
 import { createApp } from '../src/app';
+import { setGenerateDeps } from '../src/routes/generate';
 
 let server: Server;
 let base = '';
 
 before(async () => {
+  setGenerateDeps({
+    findTenant: async (id: string) =>
+      id === 'demo-tenant'
+        ? {
+            id,
+            name: 'Demo',
+            plan: 'free' as const,
+            stripe_customer_id: null,
+            status: 'active',
+            created_at: '',
+          }
+        : null,
+    insert: async (input) => ({
+      event: {
+        id: input.id,
+        tenant_id: input.tenantId,
+        type: input.type,
+        qty: input.qty,
+        idempotency_key: input.idempotencyKey,
+        token_breakdown: input.tokenBreakdown ?? null,
+        created_at: new Date().toISOString(),
+      },
+      inserted: true,
+    }),
+  });
   const app = createApp();
   server = app.listen(0);
   await once(server, 'listening');
@@ -21,6 +49,7 @@ before(async () => {
 });
 
 after(async () => {
+  setGenerateDeps(null);
   server.close();
   await once(server, 'close');
 });
@@ -41,10 +70,12 @@ async function postGenerate(opts: {
   });
   assert.notEqual(res.status, 500, 'never 500 from /generate');
   const json = (await res.json()) as Record<string, unknown>;
-  assert.ok(
-    json.error !== undefined || json.message !== undefined,
-    '4xx/5xx must carry {error/message}',
-  );
+  if (res.status >= 400) {
+    assert.ok(
+      json.error !== undefined || json.message !== undefined,
+      '4xx/5xx must carry {error/message}',
+    );
+  }
   return { status: res.status, json };
 }
 
@@ -118,26 +149,29 @@ describe('POST /generate validation (P2-T2)', () => {
     assert.ok(status >= 400 && status < 500, `expected 4xx got ${status}`);
   });
 
-  it('valid request -> 501 (meter/quota land in P2-T3/T4)', async () => {
-    const { status } = await postGenerate({
+  it('valid request -> 200 with recorded usage (P2-T3 meter)', async () => {
+    const { status, json } = await postGenerate({
       tenant: 'demo-tenant',
       key: randomUUID(),
       body: { tokens: { input: 10, cached_input: 5, output: 20, reasoning: 3 } },
     });
-    assert.equal(status, 501);
+    assert.equal(status, 200);
+    assert.equal(json.allowed, true);
+    assert.ok(json.usage !== undefined);
   });
 
-  it('valid headers + empty body -> 501 (tokens optional)', async () => {
-    const { status } = await postGenerate({ tenant: 'demo-tenant', key: randomUUID() });
-    assert.equal(status, 501);
+  it('valid headers + empty body -> 200 api_call (tokens optional)', async () => {
+    const { status, json } = await postGenerate({ tenant: 'demo-tenant', key: randomUUID() });
+    assert.equal(status, 200);
+    assert.equal(json.allowed, true);
   });
 
-  it('tenant isolation: unknown tenants stay 4xx, demo-tenant stays scoped 501', async () => {
+  it('tenant isolation: unknown tenants stay 4xx, demo-tenant stays scoped 200', async () => {
     const a = await postGenerate({ tenant: 'tenant-a-unknown-xyz', key: randomUUID() });
     const b = await postGenerate({ tenant: 'tenant-b-unknown-xyz', key: randomUUID() });
     const valid = await postGenerate({ tenant: 'demo-tenant', key: randomUUID() });
     assert.ok(a.status >= 400 && a.status < 500);
     assert.ok(b.status >= 400 && b.status < 500);
-    assert.equal(valid.status, 501);
+    assert.equal(valid.status, 200);
   });
 });
