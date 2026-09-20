@@ -2,9 +2,12 @@
 // Phase behavior tests (idempotency, quota 999/1000/1001, webhooks) land with their phases.
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { once } from 'node:events';
 import fs from 'node:fs';
+import type { AddressInfo } from 'node:net';
 import path from 'node:path';
 import * as pricing from '../src/config/pricing';
+import { createApp } from '../src/app';
 
 const root = path.join(__dirname, '..');
 const exists = (p: string): boolean => fs.existsSync(path.join(root, p));
@@ -77,6 +80,77 @@ describe('manifests', () => {
     const e = fs.readFileSync(path.join(root, '.env.example'), 'utf8');
     for (const k of ['STRIPE_SECRET_KEY', 'STRIPE_WEBHOOK_SECRET', 'DATABASE_URL']) {
       assert.ok(e.includes(k), `missing ${k}`);
+    }
+  });
+});
+
+describe('scaffold wiring (P2-T1)', () => {
+  it('db.ts pools DATABASE_URL + runs migrations from db/migrations', () => {
+    const src = fs.readFileSync(path.join(root, 'src/db.ts'), 'utf8');
+    assert.match(src, /process\.env\.DATABASE_URL/);
+    assert.match(src, /new Pool/);
+    assert.match(src, /runMigrations/);
+    assert.match(src, /db.*migrations/);
+    assert.ok(exists('db/migrations/001_init.sql'));
+  });
+
+  it('repos filter tenant_id + use ON CONFLICT DO NOTHING', () => {
+    const usage = fs.readFileSync(path.join(root, 'src/repos/usage.ts'), 'utf8');
+    assert.match(usage, /tenant_id/);
+    assert.match(usage, /ON CONFLICT \(idempotency_key\) DO NOTHING/);
+    const tenant = fs.readFileSync(path.join(root, 'src/repos/tenant.ts'), 'utf8');
+    assert.match(tenant, /WHERE id = \$1/);
+    assert.match(tenant, /ON CONFLICT \(id\) DO/);
+    const stripe = fs.readFileSync(path.join(root, 'src/repos/stripeEvent.ts'), 'utf8');
+    assert.match(stripe, /ON CONFLICT \(event_id\) DO NOTHING/);
+  });
+
+  it('tenant isolation: idempotency lookup scopes to tenant_id', () => {
+    const usage = fs.readFileSync(path.join(root, 'src/repos/usage.ts'), 'utf8');
+    assert.match(usage, /WHERE tenant_id = \$1 AND idempotency_key = \$2/);
+  });
+
+  it('seed.ts upserts Free/Pro + demo-tenant idempotently', () => {
+    const seed = fs.readFileSync(path.join(root, 'scripts/seed.ts'), 'utf8');
+    for (const token of ['1000', '100000', '10000000', '2000', 'demo-tenant', 'ON CONFLICT']) {
+      assert.ok(seed.includes(token), `seed missing ${token}`);
+    }
+  });
+
+  it('app mounts routers + error middleware (no phase logic)', () => {
+    const src = fs.readFileSync(path.join(root, 'src/app.ts'), 'utf8');
+    for (const r of ['/generate', '/usage', '/checkout', '/webhooks/stripe']) {
+      assert.ok(src.includes(`'${r}'`), `app missing router ${r}`);
+    }
+    assert.ok(src.includes('errorMiddleware'), 'app missing error middleware');
+    assert.ok(src.includes('express.raw'), 'webhooks must keep raw body');
+  });
+
+  it('live smoke: /health 200, phase stubs 501, unknown route 404 (no DB)', async () => {
+    const app = createApp();
+    const server = app.listen(0);
+    await once(server, 'listening');
+    const { port } = server.address() as AddressInfo;
+    const base = `http://127.0.0.1:${port}`;
+    try {
+      const health = await fetch(`${base}/health`);
+      assert.equal(health.status, 200);
+      assert.deepEqual(await health.json(), { ok: true });
+
+      const post = (p: string): Promise<number> =>
+        fetch(`${base}${p}`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: '{}',
+        }).then((r) => r.status);
+      assert.equal(await post('/generate'), 501);
+      assert.equal(await post('/checkout'), 501);
+      assert.equal(await post('/webhooks/stripe'), 501);
+      assert.equal((await fetch(`${base}/usage`)).status, 501);
+      assert.equal((await fetch(`${base}/nope`)).status, 404);
+    } finally {
+      server.close();
+      await once(server, 'close');
     }
   });
 });
