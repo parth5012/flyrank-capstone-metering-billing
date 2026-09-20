@@ -57,7 +57,9 @@ export async function insertUsageEvent(
   // another tenant never leaks across (same key, different tenant = invisible).
   const original = await findUsageByIdempotencyKey(input.tenantId, input.idempotencyKey);
   if (!original) {
-    throw new Error('usage insert conflicted but original row is not visible to this tenant');
+    const err = new Error('idempotency_key conflict') as Error & { status?: number };
+    err.status = 409;
+    throw err;
   }
   return { event: original, inserted: false };
 }
