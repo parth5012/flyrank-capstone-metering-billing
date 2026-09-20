@@ -143,7 +143,7 @@ describe('scaffold wiring (P2-T1)', () => {
           headers: { 'content-type': 'application/json' },
           body: '{}',
         }).then((r) => r.status);
-      assert.equal(await post('/generate'), 501);
+      assert.equal(await post('/generate'), 400); // P2-T2: missing headers -> 400 (valid -> 501, see validation.test.ts)
       assert.equal(await post('/checkout'), 501);
       assert.equal(await post('/webhooks/stripe'), 501);
       assert.equal((await fetch(`${base}/usage`)).status, 501);
