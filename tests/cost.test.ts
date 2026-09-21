@@ -87,6 +87,32 @@ describe('CostService.rollup (P4-T2)', () => {
     const v = rollupCost([B({ input: 1, cached_input: 2, output: 3, reasoning: 4 })]);
     assert.ok(Number.isInteger(v));
   });
+
+  it('large volumes stay integer-safe (P4-T4)', () => {
+    // 1B input: floor(1e9*1500/1e6) = 1_500_000c. Numerator 1.5e12,
+    // far below Number.MAX_SAFE_INTEGER (2^53 ~= 9e15) — no FLOAT drift.
+    assert.equal(rollupCost([B({ input: 1_000_000_000 })]), 1_500_000);
+    // 10M per category: 15000 + 3750 + 120000 = 138750c.
+    const mixed = rollupCost([
+      B({ input: 10_000_000, cached_input: 10_000_000, output: 10_000_000, reasoning: 10_000_000 }),
+    ]);
+    assert.equal(mixed, 138_750);
+    assert.ok(Number.isInteger(mixed));
+    assert.ok(mixed < Number.MAX_SAFE_INTEGER);
+  });
+
+  it('period rollup sums each event once, no double-count (P4-T4)', () => {
+    // Two identical 1M-input events -> 2x single (3000c, not 1500 or 6000).
+    const single = B({ input: 1_000_000 });
+    assert.equal(rollupCost([single, single]), 3000);
+    assert.equal(rollupCost([single, single]), 2 * rollupCost([single]));
+    // Additive across a period: split events equal one combined breakdown.
+    const a = B({ input: 100_000, cached_input: 200_000 });
+    const b = B({ output: 50_000, reasoning: 30_000 });
+    const combined = B({ input: 100_000, cached_input: 200_000, output: 50_000, reasoning: 30_000 });
+    assert.equal(rollupCost([a, b]), rollupCost([combined]));
+    assert.equal(rollupCost([a, b]), 705);
+  });
 });
 
 // GET /usage cost_cents matches rollup (same constants, tenant-isolated).
@@ -234,5 +260,30 @@ describe('GET /usage cost_cents matches rollup (P4-T2)', () => {
     ).json()) as Record<string, unknown>;
     assert.equal(demo.cost_cents, 1500);
     assert.equal(other.cost_cents, 0);
+  });
+
+  it('GET /usage reads are stable: repeated fetch same cost (P4-T4)', async () => {
+    const post = await fetch(`${base}/generate`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-tenant-id': 'demo-tenant',
+        'idempotency-key': randomUUID(),
+      },
+      body: JSON.stringify({
+        tokens: { input: 100_000, cached_input: 200_000, output: 50_000, reasoning: 30_000 },
+      }),
+    });
+    assert.equal(post.status, 200);
+    const first = (await (
+      await fetch(`${base}/usage`, { headers: { 'x-tenant-id': 'demo-tenant' } })
+    ).json()) as Record<string, unknown>;
+    const second = (await (
+      await fetch(`${base}/usage`, { headers: { 'x-tenant-id': 'demo-tenant' } })
+    ).json()) as Record<string, unknown>;
+    // Read path accrues nothing: same 705c twice, same token usage.
+    assert.equal(first.cost_cents, 705);
+    assert.equal(second.cost_cents, 705);
+    assert.deepEqual(first.tokens, second.tokens);
   });
 });
