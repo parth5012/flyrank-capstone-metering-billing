@@ -18,7 +18,7 @@ Prereqs: Docker, Node 20+, `uuidgen`. Stripe CLI only needed for live webhook re
 
 ```bash
 cp .env.example .env   # fill sk_test_... / whsec_... (test mode only, never commit)
-docker compose up --build
+docker compose up --build -d
 npm run seed           # creates Free/Pro plans + demo-tenant (idempotent, re-runnable)
 ```
 
@@ -43,10 +43,17 @@ Quota boundary: at 1000/1000 the request still returns 200; the 1001st returns
 `429 {"reason":"quota_exceeded",...}` + `Retry-After: 60` (lapsed `past_due`
 tenant returns `402 {"reason":"upgrade_required"}` instead).
 
-Live Stripe replay (needs `stripe login` first, test mode only):
+Live Stripe replay (needs `stripe login` first, test mode only).
+The app reads `STRIPE_WEBHOOK_SECRET` from the environment (`.env` is NOT
+baked into the image, compose passes it through), so the signing secret must
+be in place before the app boots:
 
 ```bash
 stripe listen --forward-to localhost:3000/webhooks/stripe
+# 1. copy the whsec_... value it prints into .env as STRIPE_WEBHOOK_SECRET
+# 2. recreate the app so it picks up the secret:
+docker compose up -d --force-recreate app
+# 3. only then trigger:
 stripe trigger checkout.session.completed \
   --add checkout_session:client_reference_id=demo-tenant
 # expect: webhook 200 {"received":true,...}, tenant flips Free->Pro

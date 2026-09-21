@@ -167,4 +167,27 @@ describe('runner retry + alert log (P4-T3)', () => {
     assert.equal(crit.length, 1, 'exactly one critical alert on final failure');
     assert.match(crit[0].message, /permanent boom|failed|retries/i);
   });
+
+  it('throwing logger does not replace the job result (ok:false preserved)', async () => {
+    const alertLog = freshLog();
+    const throwingLogger = (): void => {
+      throw new Error('disk full');
+    };
+    const res = await runJobWithRetry(
+      async () => {
+        throw new Error('permanent boom');
+      },
+      {
+        jobName: 'reconcile',
+        maxRetries: 1,
+        alertLog,
+        sleep: async () => {},
+        logger: throwingLogger,
+      },
+    );
+    assert.equal(res.ok, false);
+    assert.equal(res.attempts, 2, '1 initial + 1 retry');
+    assert.equal(alertLog.length, 1, 'entry kept in caller-owned log despite logger throw');
+    assert.equal(alertLog[0].level, 'critical');
+  });
 });

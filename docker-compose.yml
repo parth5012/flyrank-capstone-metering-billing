@@ -16,6 +16,7 @@ services:
     environment:
       DATABASE_URL: postgres://postgres:postgres@db:5432/metering
       PORT: 3000
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET}
     ports:
       - "3000:3000"
 
