@@ -9,16 +9,16 @@
 - [x] Boundary 1000/1000 allows, 1001 -> 429/402 with message. Proof: ephemeral-server transcript below (seeded 999 -> 1000th 200, 1001st 429 `quota_exceeded` + `Retry-After: 60`, count unchanged). 402 `upgrade_required` covered by unit/HTTP tests (past_due tenant). Live-DB boundary curl deferred to review-gate DB env.
 
 ## Cost
-- [ ] Pricing constants in `src/config/pricing.ts` + cached/reasoning math correct. Proof: `TODO: unit test output`
-- [ ] GET /usage matches constants. Proof: `TODO`
+- [x] Pricing constants in `src/config/pricing.ts` + cached/reasoning math correct. Proof: constants (`TOKENS_PER_UNIT=1_000_000`, `INPUT_PER_M_CENTS=1500`, `CACHED_PER_M_CENTS=375`, `OUTPUT_PER_M_CENTS=6000`) + `tests/cost.test.ts` 12/12 green (cached 1M→375c = 1/4 input 1500c; reasoning 1M→6000c = output rate; mixed 100k/200k/50k/30k→705c; 1B-input integer-safe 1_500_000c; period additive `[a,b]==[combined]`). Suite tail: `ℹ tests 12 / ℹ pass 12 / ℹ fail 0`.
+- [x] GET /usage matches constants. Proof: Probe 5 transcript below (mixed write → `GET /usage #1 {"cost_cents":705,...}` = `rollupCost` 705c; `#2` identical `stable=true`; tenant isolation `demo 1500c / other 0c`) + integration tests (`mixed write -> GET /usage cost_cents 705 matches rollup`, `tenant isolation`, `reads stable`) green in full `npm test` 114/114.
 
 ## Stripe
 - [x] Test Checkout Free->Pro via webhook. Proof: Probe 3 ephemeral transcript below (POST /checkout -> SDK-signed `checkout.session.completed` -> tenant Free->Pro -> GET /usage Pro limits) + `tests/checkout.test.ts` (happy path `checkout_url`, session params) + `tests/billing-sync.test.ts` (`completed flips free->pro`). Live `stripe trigger` deferred to Stripe-enabled env — exact commands below.
 - [x] Bad signature -> 400, replay -> once. Proof: Probe 4a/4b transcripts below (missing/forged -> 400 with zero `stripe_events` writes; replay same event twice -> first applies, second `200 deduped:true`, `COUNT 1`, apply once) + `tests/webhooks.test.ts` (replay `deduped:true` apply once) + `tests/billing-sync.test.ts` (Free→Pro flip, replay one sub row). Live trigger + replay deferred — exact commands below.
 
 ## Data/docs
-- [ ] Migrations present, tenant isolation. Proof: `TODO`
-- [ ] README + diagram + capstone.yaml present. Proof: `TODO: this file`
+- [x] Migrations present, tenant isolation. Proof: `db/migrations/001_init.sql` (`idempotency_key TEXT UNIQUE NOT NULL`, `stripe_events(event_id PK)`, `idx_usage_tenant_created`) + `tests/scaffold.test.ts` migration test green in `npm test` 114/114; every query in `src/repos/usage.ts` filters `tenant_id` (`WHERE tenant_id = $1`, cross-tenant key → 409); isolation covered by `tests/cost.test.ts` (`demo 1500c / other 0c`) + `tests/usage.test.ts` (cross-tenant key invisible).
+- [x] README + diagram + capstone.yaml present. Proof: `README.md` (what/diagram ascii/run+seed stranger-can-run/limitations), `capstone.yaml` (`run: docker compose up --build`, `seed: npm run seed`, `test: npm test`, `base_url: http://localhost:3000`, 4 endpoints), `.env.example` (placeholders only, no secrets), `docs/architecture.md` + `BUILDLOG.md` Phase 4 entries; required-files `ls` all OK (see pack checklist).
 
 ---
 
@@ -361,3 +361,69 @@ Prod SQL behind the Stripe proofs (`src/repos/stripeEvent.ts`,
 false); `UPDATE tenants SET plan/status ... WHERE id=$1` +
 `INSERT INTO subscriptions ... ON CONFLICT (stripe_subscription_id) DO
 UPDATE` (idempotent Free→Pro flip).
+
+---
+
+## Probe 5 — Cost: cached/reasoning/mixed totals + GET /usage match (P4-T4, 2026-09-21)
+
+Env: same constraint as Probes 1–4 (no Docker/Postgres in agent env).
+Proof runs the real Express app (`createApp` + `POST /generate` +
+`GET /usage`) on an ephemeral port with the in-memory test seam from
+`tests/cost.test.ts` (`sumTokenBreakdowns` per-tenant mirroring the
+`SUM ... WHERE tenant_id=$1 AND type='ai_token'` query; cost via the real
+`rollupCost`, `cost_cents = floor((input*1500 + cached*375 +
+(output+reasoning)*6000) / 1M)`). Temp script lived only in
+`.tmp/probe-p5t4.ts` (gitignored, not committed). Live-DB run deferred to
+review-gate DB env (same `docker compose up` + curl pattern as Probes 1/2).
+
+```text
+ROLLUP cached 1M => 375 c (input 1M => 1500 c)
+ROLLUP reasoning 1M => 6000 c (output 1M => 6000 c)
+ROLLUP mixed 100k/200k/50k/30k => 705 c
+POST /generate 200
+GET /usage #1 {"cost_cents":705,"tokens":{"used":380000,"limit":10000000}}
+GET /usage #2 {"cost_cents":705,"tokens":{"used":380000,"limit":10000000}} stable=true
+```
+
+Result: cached 1M bills 375c (1/4 of input 1500c — cached cheaper);
+reasoning 1M bills 6000c (same as output — reasoning-as-output); mixed
+`100k*1500 + 200k*375 + 80k*6000 = 705M / 1M = 705c` exact; `POST
+/generate` mixed write → `GET /usage cost_cents 705` matches `rollupCost`
+705c; second `GET /usage` identical (read path accrues nothing,
+`stable=true`); tenant isolation (`demo 1500c / other 0c`) in suite.
+
+TDD red→green: RED shown without touching `src/*` — classic buggy
+formulas on the same inputs fail (`per-event-floor 10x100-input => 0`
+vs correct 1; `blended-input-rate 1M-cached => 1500` vs correct 375;
+`blended 1M-cached+1M-output => 3000` vs correct 6375). GREEN:
+`tests/cost.test.ts` 12/12 (`CostService.rollup` 9 incl. 2 new P4-T4
+`large volumes integer-safe` + `period rollup sums once`, `GET /usage`
+3 incl. new `reads stable`), full `npm test` 114/114 pass 0 fail,
+`npm run typecheck` (`tsc --noEmit`) clean exit 0. New edge cover:
+1B-input → 1_500_000c integer-safe (numerator 1.5e12 ≪ 2^53), period
+additive `rollup([a,b]) == rollup([combined]) == 705`, repeated
+`GET /usage` deep-equal.
+
+## Test suite (P4-T4, 2026-09-21)
+
+```text
+✔ cached bills at 1/4 input rate (1.497955ms)
+✔ reasoning bills as output (0.25065ms)
+✔ mixed breakdown pins deterministic cents total (0.277411ms)
+✔ never sums raw tokens (cached-heavy regression) (0.365843ms)
+✔ tiny events accrue via sum-then-floor (per-event floor would lose) (0.269546ms)
+✔ 1c thresholds: ~667 input / ~2667 cached / ~167 output (0.232352ms)
+✔ empty / zero -> 0, integers only (0.201668ms)
+✔ large volumes stay integer-safe (P4-T4) (0.265018ms)
+✔ period rollup sums each event once, no double-count (P4-T4) (0.273903ms)
+✔ mixed write -> GET /usage cost_cents 705 matches rollup (144.072818ms)
+✔ tenant isolation: cost scoped per tenant (21.319539ms)
+✔ GET /usage reads are stable: repeated fetch same cost (P4-T4) (14.657441ms)
+ℹ tests 12
+ℹ suites 2
+ℹ pass 12
+ℹ fail 0
+```
+
+Full: `ℹ tests 114 / ℹ suites 30 / ℹ pass 114 / ℹ fail 0`.
+`npm run typecheck`: clean, exit 0.
