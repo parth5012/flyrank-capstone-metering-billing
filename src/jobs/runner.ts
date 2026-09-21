@@ -44,7 +44,9 @@ const defaultLogger = (entry: AlertEntry): void => {
   console.error(JSON.stringify(entry));
 };
 
-/** Append to alert log + console logger; returns the entry. */
+/** Append to alert log + console logger; returns the entry. A throwing
+ * logger (e.g. file I/O failure) is swallowed — observability must never
+ * replace the job outcome; the entry is already in alertLog. */
 export function pushAlert(
   alertLog: AlertEntry[] | undefined,
   logger: ((entry: AlertEntry) => void) | undefined,
@@ -52,7 +54,11 @@ export function pushAlert(
 ): AlertEntry {
   const entry: AlertEntry = { ...base, at: new Date().toISOString() };
   alertLog?.push(entry);
-  (logger ?? defaultLogger)(entry);
+  try {
+    (logger ?? defaultLogger)(entry);
+  } catch {
+    // Intentionally ignored: job result (ok/error) is already decided.
+  }
   return entry;
 }
 
