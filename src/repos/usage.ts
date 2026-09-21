@@ -93,3 +93,31 @@ export async function sumTokensByTenant(tenantId: string): Promise<number> {
   );
   return Number(rows[0]?.sum ?? 0);
 }
+
+// Per-category token sums for CostService.rollup (P4-T2). Rollup sums per
+// category, never raw tokens (DESIGN.md §6); this query feeds those sums so
+// cost math stays sum-numerators-then-single-floor. Tenant-scoped like all
+// reads here; events without a breakdown contribute 0.
+export async function sumTokenBreakdownsByTenant(tenantId: string): Promise<TokenBreakdown> {
+  const { rows } = await query<{
+    input: string | null;
+    cached_input: string | null;
+    output: string | null;
+    reasoning: string | null;
+  }>(
+    `SELECT COALESCE(SUM((token_breakdown->>'input')::bigint), 0)::text AS input,
+            COALESCE(SUM((token_breakdown->>'cached_input')::bigint), 0)::text AS cached_input,
+            COALESCE(SUM((token_breakdown->>'output')::bigint), 0)::text AS output,
+            COALESCE(SUM((token_breakdown->>'reasoning')::bigint), 0)::text AS reasoning
+       FROM usage_events
+      WHERE tenant_id = $1 AND type = 'ai_token' AND token_breakdown IS NOT NULL`,
+    [tenantId],
+  );
+  const row = rows[0];
+  return {
+    input: Number(row?.input ?? 0),
+    cached_input: Number(row?.cached_input ?? 0),
+    output: Number(row?.output ?? 0),
+    reasoning: Number(row?.reasoning ?? 0),
+  };
+}
