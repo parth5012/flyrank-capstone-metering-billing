@@ -21,6 +21,8 @@ describe('POST /webhooks/stripe verification (P3-T3)', () => {
   let server: Server;
   let base = '';
   let markProcessedCalls: Array<{ eventId: string; type: string }> = [];
+  let processedEvents = new Set<string>();
+  let applyCalls: string[] = [];
 
   const sampleEvent = {
     id: 'evt_test_checkout_completed_123',
@@ -47,7 +49,13 @@ describe('POST /webhooks/stripe verification (P3-T3)', () => {
       getWebhookSecret: () => TEST_WEBHOOK_SECRET,
       markProcessed: async (eventId: string, type: string) => {
         markProcessedCalls.push({ eventId, type });
+        if (processedEvents.has(eventId)) return false;
+        processedEvents.add(eventId);
         return true;
+      },
+      applyStripeEvent: async (event: { id: string }) => {
+        applyCalls.push(event.id);
+        return { applied: true };
       },
     });
 
@@ -66,11 +74,19 @@ describe('POST /webhooks/stripe verification (P3-T3)', () => {
 
   beforeEach(() => {
     markProcessedCalls = [];
+    processedEvents = new Set<string>();
+    applyCalls = [];
     setWebhookDeps({
       getWebhookSecret: () => TEST_WEBHOOK_SECRET,
       markProcessed: async (eventId: string, type: string) => {
         markProcessedCalls.push({ eventId, type });
+        if (processedEvents.has(eventId)) return false;
+        processedEvents.add(eventId);
         return true;
+      },
+      applyStripeEvent: async (event: { id: string }) => {
+        applyCalls.push(event.id);
+        return { applied: true };
       },
     });
   });
@@ -350,6 +366,8 @@ describe('POST /webhooks/stripe verification (P3-T3)', () => {
       });
       assert.equal(res2.status, 200);
       assert.equal(res2.json.received, true);
+      assert.equal(res2.json.deduped, true);
+      assert.equal(applyCalls.length, 1);
     });
   });
 });

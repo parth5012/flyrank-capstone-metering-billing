@@ -2,6 +2,7 @@
 // Tenant isolation: every query scopes by tenant id — no cross-tenant reads.
 // Money stays integer cents (see src/config/pricing.ts); token_limit is
 // BIGINT, read back as string per node-postgres convention.
+import { randomUUID } from 'node:crypto';
 import { query } from '../db';
 
 export interface Tenant {
@@ -82,4 +83,61 @@ export async function findPlan(planId: string): Promise<Plan | null> {
     planId,
   ]);
   return rows[0] ?? null;
+}
+
+export async function updateTenantPlan(
+  tenantId: string,
+  plan: 'free' | 'pro',
+  stripeCustomerId?: string | null,
+  status?: string,
+): Promise<Tenant | null> {
+  const { rows } = await query<Tenant>(
+    `UPDATE tenants
+     SET plan = $2,
+         stripe_customer_id = COALESCE($3, stripe_customer_id),
+         status = COALESCE($4, status)
+     WHERE id = $1
+     RETURNING ${TENANT_COLS}`,
+    [tenantId, plan, stripeCustomerId ?? null, status ?? null],
+  );
+  return rows[0] ?? null;
+}
+
+export async function upsertSubscription(input: {
+  tenantId: string;
+  stripeSubscriptionId: string;
+  status: string;
+  currentPeriodEnd?: string | null;
+}): Promise<void> {
+  const id = randomUUID();
+  await query(
+    `INSERT INTO subscriptions (id, tenant_id, stripe_subscription_id, status, current_period_end)
+     VALUES ($1, $2, $3, $4, $5)
+     ON CONFLICT (stripe_subscription_id) DO UPDATE SET
+       status = EXCLUDED.status,
+       current_period_end = COALESCE(EXCLUDED.current_period_end, subscriptions.current_period_end)`,
+    [
+      id,
+      input.tenantId,
+      input.stripeSubscriptionId,
+      input.status,
+      input.currentPeriodEnd ?? null,
+    ],
+  );
+}
+
+export async function findTenantByStripeCustomerId(customerId: string): Promise<Tenant | null> {
+  const { rows } = await query<Tenant>(
+    `SELECT ${TENANT_COLS} FROM tenants WHERE stripe_customer_id = $1`,
+    [customerId],
+  );
+  return rows[0] ?? null;
+}
+
+export async function findTenantIdBySubscription(stripeSubscriptionId: string): Promise<string | null> {
+  const { rows } = await query<{ tenant_id: string }>(
+    'SELECT tenant_id FROM subscriptions WHERE stripe_subscription_id = $1',
+    [stripeSubscriptionId],
+  );
+  return rows[0]?.tenant_id ?? null;
 }

@@ -21,3 +21,7 @@ export async function isProcessed(eventId: string): Promise<boolean> {
   );
   return rows.length > 0;
 }
+
+export async function removeProcessed(eventId: string): Promise<void> {
+  await query('DELETE FROM stripe_events WHERE event_id = $1', [eventId]);
+}
