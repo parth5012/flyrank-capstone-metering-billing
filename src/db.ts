@@ -9,7 +9,12 @@ import { Pool, type QueryResult, type QueryResultRow } from 'pg';
 const connectionString =
   process.env.DATABASE_URL ?? 'postgres://postgres:postgres@localhost:5432/metering';
 
-export const pool = new Pool({ connectionString, max: 10, idleTimeoutMillis: 30_000 });
+export const pool = new Pool({
+  connectionString,
+  max: 10,
+  idleTimeoutMillis: 30_000,
+  connectionTimeoutMillis: 10_000,
+});
 
 export function query<T extends QueryResultRow = QueryResultRow>(
   text: string,
