@@ -33,7 +33,7 @@ No code, `package.json`, or `docker-compose.yml` yet — repo is skeleton + desi
 ```
 Client -> POST /generate -> MeterService.record(tenant,type,qty,key)
   duplicate key? -> return original (no new event)
-  -> store usage_event -> Quota Check -> allow / 429,402
+  -> Quota Check -> allow: store usage_event -> 200 / deny: 429,402
 GET /usage <- rollup(usage_events) -> {used, limit, cost}
 Stripe Checkout -> subscription
 Stripe --signed--> POST /webhooks/stripe -> verify -> dedup -> update plan
@@ -45,7 +45,13 @@ Stripe --signed--> POST /webhooks/stripe -> verify -> dedup -> update plan
 
 ## Entry points
 
-`POST /generate` (headers `X-Tenant-Id`, `Idempotency-Key` uuidv4) · `GET /usage?tenant_id=` · `POST /checkout` · `POST /webhooks/stripe`. Base `http://localhost:3000`. Plans: Free `1000 API / 100k tokens`, Pro `100000 API / 10M tokens / $20`.
+`POST /generate` (headers `X-Tenant-Id`, `Idempotency-Key` uuidv4) · `GET /usage` (header `X-Tenant-Id`) · `POST /checkout` · `POST /webhooks/stripe`. Base `http://localhost:3000`. Plans: Free `1000 API / 100k tokens`, Pro `100000 API / 10M tokens / $20`.
+
+## Phase 4 as-built: cost + jobs (2026-09-21)
+
+- `CostService.rollup` (`src/services/cost.ts`, constants in `src/config/pricing.ts`): sums per-category breakdowns across the period, then one `floor` — `floor((input*1500 + cached*375 + (output+reasoning)*6000)/1M)` cents. Cached bills 1/4 of input; reasoning bills as output; tiny events accrue (no per-event floor); integers only, no FLOAT. `GET /usage` adds `cost_cents` via tenant-scoped `sumTokenBreakdownsByTenant` (`src/repos/usage.ts`); read path writes nothing (repeated fetch stable).
+- Background jobs (`src/jobs/`, off request path, shared req #3): `runner.ts` (`runJobWithRetry`, exponential backoff, caller-owned alert log), `alerts.ts` (warn ≥80%, critical ≥100% of quota), `reconcile.ts` (dry-run DB-vs-Stripe key diff, read-only by construction). Wired to scheduler, never to routes.
+- Tenant isolation holds end-to-end: every repo query filters `tenant_id` (`usage_events`, `stripe_events` dedup, cost sums, job listers); cross-tenant idempotency key → 409, never a leak.
 
 ## Graphify graph location
 
