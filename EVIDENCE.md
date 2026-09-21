@@ -13,8 +13,8 @@
 - [ ] GET /usage matches constants. Proof: `TODO`
 
 ## Stripe
-- [ ] Test Checkout Free->Pro via webhook. Proof: `TODO: stripe trigger log`
-- [ ] Bad signature -> 400, replay -> once. Proof: `TODO`
+- [x] Test Checkout Free->Pro via webhook. Proof: Probe 3 ephemeral transcript below (POST /checkout -> SDK-signed `checkout.session.completed` -> tenant Free->Pro -> GET /usage Pro limits) + `tests/checkout.test.ts` (happy path `checkout_url`, session params) + `tests/billing-sync.test.ts` (`completed flips free->pro`). Live `stripe trigger` deferred to Stripe-enabled env — exact commands below.
+- [x] Bad signature -> 400, replay -> once. Proof: Probe 4a/4b transcripts below (missing/forged -> 400 with zero `stripe_events` writes; replay same event twice -> first applies, second `200 deduped:true`, `COUNT 1`, apply once) + `tests/webhooks.test.ts` (replay `deduped:true` apply once) + `tests/billing-sync.test.ts` (Free→Pro flip, replay one sub row). Live trigger + replay deferred — exact commands below.
 
 ## Data/docs
 - [ ] Migrations present, tenant isolation. Proof: `TODO`
@@ -193,3 +193,171 @@ Prod SQL behind the proofs (`src/repos/usage.ts`): `INSERT ... ON CONFLICT
 `SELECT COALESCE(SUM(qty),0) ... WHERE tenant_id=$1 AND type='ai_token'`
 (token usage); quota gate `current + requested > limit` checked BEFORE
 write (`src/services/quota.ts`, `src/routes/generate.ts`).
+
+---
+
+## Probe 3 — Checkout → webhook → Free→Pro → GET /usage Pro limits (P3-T5, 2026-09-21)
+
+Env: no `.env`, no Stripe CLI, no Docker DB in this agent env (same
+constraint as P2-T7). Proof runs the real Express app (`createApp`) on an
+ephemeral port with the same in-memory seams used by
+`tests/checkout.test.ts` / `tests/webhooks.test.ts` /
+`tests/billing-sync.test.ts`: mocked `createSession` (returns
+`https://checkout.stripe.com/...`, no network), SDK-signed webhook fixture
+(`Stripe.webhooks.generateTestHeaderString` with `whsec_test_...`), dedup
+via in-memory `Set` mirroring `stripe_events(event_id)` +
+`ON CONFLICT DO NOTHING` (`src/repos/stripeEvent.ts`), billing via the real
+`BillingService.applyStripeEvent` (`src/services/billing.ts`), plan limits
+from `scripts/seed.ts` (free `1000/100000`, pro `100000/10000000`). Temp
+script lived only in `.tmp/probe-p3t5.ts` (gitignored, not committed).
+
+```text
+USAGE_BEFORE {"plan":"free","api":{"used":0,"limit":1000},"tokens":{"used":0,"limit":100000}}
+CHECKOUT {"checkout_url":"https://checkout.stripe.com/c/pay/cs_test_probe3_abc123"}
+WEBHOOK_FIRST 200 {"received":true,"id":"evt_probe3_checkout_completed_1","event_id":"evt_probe3_checkout_completed_1","type":"checkout.session.completed"}
+TENANT_AFTER_WEBHOOK {"plan":"pro","stripe_customer_id":"cus_test_probe_123"}
+USAGE_AFTER {"plan":"pro","api":{"used":0,"limit":100000},"tokens":{"used":0,"limit":10000000}}
+```
+
+Result: `GET /usage` before shows `free 1000/100000`; `POST /checkout`
+returns `checkout_url` shaped `https://checkout.stripe.com/...`; signed
+`checkout.session.completed` webhook returns `200 received:true`; billing
+apply flips tenant `free→pro` (customer `cus_test_probe_123` stored);
+`GET /usage` after shows `pro 100000/10000000`. Unit cover in
+`tests/checkout.test.ts` (happy path `creates session and returns
+checkout_url`, Stripe params `mode:subscription` + Pro price +
+`client_reference_id`/`metadata.tenant_id`, no secret leak) and
+`tests/billing-sync.test.ts` (`completed flips free->pro + sub inserted`).
+
+## Probe 4a — Forged/missing signature → 400, zero DB writes (P3-T5, 2026-09-21)
+
+Same ephemeral server. Verification happens BEFORE any `stripe_events`
+write (`src/routes/webhooks.ts` steps 1–4 → 400, step 5 dedup never
+reached), so `markProcessed` delta is 0 on every reject:
+
+```text
+PROBE4A_MISSING 400 {"error":"missing_signature","message":"stripe-signature header required"} markProcessed_delta=0
+PROBE4A_FORGED 400 {"error":"bad_signature","message":"No signatures found matching the expected signature for payload. ..."} markProcessed_delta=0
+PROBE4A_DB_WRITES_ON_REJECT markProcessed_delta=0 stripe_events_size=1 applyCalls=1
+```
+
+(`stripe_events_size=1` / `applyCalls=1` are from the earlier Probe 3
+success — the two rejects added zero rows and zero applies.)
+`wrong-secret` and `tampered-payload` variants of the same `400
+bad_signature` + zero-writes assertion are covered in
+`tests/webhooks.test.ts` (`signature signed with wrong secret -> 400`,
+`tampered payload -> 400`, `expired timestamp -> 400`).
+
+Local forwarding line used against a live server (deferred, see below):
+
+```bash
+stripe listen --forward-to localhost:3000/webhooks/stripe
+```
+
+## Probe 4b — Replay same event → applied once (P3-T5, 2026-09-21)
+
+Same ephemeral server, fresh event id replayed twice. First delivery
+applies (`markProcessed` true → `applyStripeEvent` runs); second hits the
+dedup record (`markProcessed` false → `200 deduped:true`, no second apply),
+mirroring `INSERT ... ON CONFLICT (event_id) DO NOTHING`:
+
+```text
+PROBE4B_REPLAY1 200 {"received":true,"id":"evt_probe4b_replay_1","event_id":"evt_probe4b_replay_1","type":"checkout.session.completed"}
+PROBE4B_REPLAY2 200 {"received":true,"deduped":true,"id":"evt_probe4b_replay_1","event_id":"evt_probe4b_replay_1","type":"checkout.session.completed"}
+PROBE4B_COUNT stripe_events_has_evt=true apply_delta=1 subscriptions_size=1 tenant_plan=pro
+UNIT_MARK first=true second=false
+```
+
+Result: same event twice → first `200 received:true` (applied), second
+`200 deduped:true`; `stripe_events` holds the id once, billing applied once
+(`apply_delta=1`), subscriptions still 1 row (upsert), tenant updated once
+(stays `pro`). HTTP-level cover in `tests/webhooks.test.ts` (`replay of
+same signed event ... res2 deduped:true, applyCalls.length 1`); service
+cover in `tests/billing-sync.test.ts` (`replay (call apply twice) -> still
+one sub row + plan stays pro`); unit `markProcessed first true second
+false` mirrors the `PRIMARY KEY (event_id)` contract
+(`db/migrations/001_init.sql`, `src/repos/stripeEvent.ts`).
+
+## Test suite (P3-T5, 2026-09-21)
+
+```text
+✔ BillingService.applyStripeEvent (P3-T4) (8 tests: completed flips free->pro, replay one sub row, updated syncs status/period x2, deleted downgrades to free, unknown type applied:false, metadata fallback, missing tenant applied:false)
+✔ POST /checkout (P3-T2) (16 tests: validation 6, tenant 404 1, config/security 5, happy path 4)
+✔ MeterService.record idempotent insert (P2-T3) (3 tests)
+✔ POST /generate idempotent record (P2-T3, HTTP) (3 tests)
+✔ QuotaService boundary (P2-T4 unit) (6 tests)
+✔ POST /generate quota gate (P2-T4, HTTP) (6 tests)
+✔ scaffold structure (2 tests)
+✔ pricing constants (1 test)
+✔ migration (1 test)
+✔ manifests (2 tests)
+✔ scaffold wiring (P2-T1) (6 tests)
+✔ P2-T6 dedup edges (4 tests)
+✔ P2-T6 pro limits + tenant max deferred (3 tests)
+✔ GET /usage rollup (P2-T5) (5 tests)
+✔ POST /generate validation (P2-T2) (12 tests)
+✔ POST /webhooks/stripe verification (P3-T3) (15 tests: missing/malformed 3, body/payload 3, forged/bad 4, config 2, valid+replay 3)
+ℹ tests 93
+ℹ suites 25
+ℹ pass 93
+ℹ fail 0
+```
+
+`npm run typecheck` (`tsc --noEmit`): clean, no output, exit 0.
+
+## Live-Stripe reproduction (Stripe-enabled review-gate env)
+
+Not runnable in the agent env (no `.env`, no `stripe` CLI here — `stripe:
+not found`; Postgres via Docker not started). Run where secrets + CLI +
+Docker exist. Secrets placeholders only — never commit real keys (see
+`.env.example`: `STRIPE_SECRET_KEY=sk_test_PLACEHOLDER`,
+`STRIPE_WEBHOOK_SECRET=whsec_PLACEHOLDER`,
+`STRIPE_PRO_PRICE_ID=price_PLACEHOLDER`).
+
+```bash
+docker compose up --build &
+sleep 5
+npm run seed   # Free/Pro plans + demo-tenant (scripts/seed.ts)
+
+# 0. Authenticate the CLI (test mode only, sk_test_... / whsec_...):
+stripe login
+
+# 1. Forward live test webhooks to the local server:
+stripe listen --forward-to localhost:3000/webhooks/stripe
+
+# 2. Checkout flips Free->Pro (Probe 3 live):
+curl -s -X POST localhost:3000/checkout \
+  -H "Content-Type: application/json" \
+  -d '{"tenant_id":"demo-tenant"}'
+# expect: 200 {"checkout_url":"https://checkout.stripe.com/..."}
+curl -s localhost:3000/usage -H "X-Tenant-Id: demo-tenant"
+# expect: plan free, api.limit 1000, tokens.limit 100000
+stripe trigger checkout.session.completed \
+  --add checkout_session:client_reference_id=demo-tenant
+# expect: webhook 200 {"received":true,...}, tenant plan pro
+curl -s localhost:3000/usage -H "X-Tenant-Id: demo-tenant"
+# expect: plan pro, api.limit 100000, tokens.limit 10000000
+
+# 3. Bad signature -> 400, zero writes (Probe 4a live):
+curl -s -i -X POST localhost:3000/webhooks/stripe \
+  -H "Content-Type: application/json" \
+  -H "stripe-signature: t=123,v1=deadbeef" \
+  -d '{"id":"evt_forged_1","type":"checkout.session.completed","data":{"object":{}}}'
+# expect: 400 {"error":"bad_signature",...}, no stripe_events row
+
+# 4. Replay -> once (Probe 4b live): re-deliver the same event id twice,
+# then confirm a single dedup row and a single tenant flip:
+docker compose exec -T db psql "$DATABASE_URL" \
+  -c "SELECT COUNT(*) FROM stripe_events WHERE event_id = '<evt-id-from-step-2>';"
+# expect: count = 1
+docker compose exec -T db psql "$DATABASE_URL" \
+  -c "SELECT plan FROM tenants WHERE id = 'demo-tenant';"
+# expect: plan = pro (updated once)
+```
+
+Prod SQL behind the Stripe proofs (`src/repos/stripeEvent.ts`,
+`src/services/billing.ts`): `INSERT INTO stripe_events (event_id, type)
+... ON CONFLICT (event_id) DO NOTHING RETURNING` (first true, replay
+false); `UPDATE tenants SET plan/status ... WHERE id=$1` +
+`INSERT INTO subscriptions ... ON CONFLICT (stripe_subscription_id) DO
+UPDATE` (idempotent Free→Pro flip).
