@@ -13,6 +13,9 @@ _None yet — populate as the agent identifies debt during work._
 | TD-01 | 2026-09-20 | POST /generate records without quota check (QuotaService.check still stub; allow-all) | P2-T3 scope: meter record only; boundary 1000/1001 lands in P2-T4 | Over-limit tenants not rejected until P2-T4 | 1 ticket (P2-T4) |
 | TD-02 | 2026-09-20 | No cost_cents in /generate response (CostService.rollup Phase 4) | Pricing math deferred; usage qty/breakdown recorded so rollup has inputs | Billing responses incomplete until Phase 4 | 1 ticket (Phase 4) |
 | TD-03 | 2026-09-20 | Dedup tests use in-memory doubles, not live Postgres; setGenerateDeps seam in route | No Docker DB in this env; UNIQUE+ON CONFLICT semantics emulated first-write-wins | True concurrent-sender + SELECT COUNT(*) proof still required | 1 ticket (P2-T7 live proof) |
+| TD-04 | 2026-09-21 | Stripe session creation lives in route (checkout.ts) not services/billing.ts | P3-T2 minimal scope; P3-T4 added BillingService.sync separately | Layered-arch drift until checkout moved to service | Small refactor |
+| TD-05 | 2026-09-21 | Stripe proofs ephemeral (SDK-signed fixtures), no live trigger/CLI/Docker | No .env/stripe CLI/docker in agent env; P2-T7 precedent | Live trigger + bad-sig + replay COUNT still required at review gate | 1 live session |
+| TD-06 | 2026-09-21 | No out-of-order event versioning (updated before completed overwrites by status only) | Stripe ordering rare; upserts idempotent but no timestamp compare | Stale write could clobber newer period_end (mitigated COALESCE) | Add event created compare |
 
 ## Resolved Debt
 
