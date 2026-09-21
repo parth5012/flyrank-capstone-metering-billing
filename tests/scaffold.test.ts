@@ -145,7 +145,7 @@ describe('scaffold wiring (P2-T1)', () => {
         }).then((r) => r.status);
       assert.equal(await post('/generate'), 400); // P2-T2: missing headers -> 400 (valid -> 501, see validation.test.ts)
       assert.equal(await post('/checkout'), 400); // P3-T2: implemented, missing tenant_id -> 400
-      assert.equal(await post('/webhooks/stripe'), 501);
+      assert.equal(await post('/webhooks/stripe'), 400); // P3-T3: implemented, missing stripe-signature -> 400
       assert.equal((await fetch(`${base}/usage`)).status, 400); // P2-T5: implemented, missing tenant header -> 400
       assert.equal((await fetch(`${base}/nope`)).status, 404);
     } finally {
