@@ -1,14 +1,16 @@
 // GET /usage rollup (P2-T5): tenant-isolated read of usage_events.
 // Shape (DESIGN.md §3): {tenant,plan,api:{used,limit},tokens:{used,limit},
 // cost_cents,period}. api used = COUNT(*) tenant-scoped, tokens used =
-// SUM(qty) over ai_token. cost_cents placeholder 0 until P4 (shape stable,
-// integers only). period = current UTC calendar-month window; subscription
+// SUM(qty) over ai_token. cost_cents = rollupCost over per-category
+// breakdown sums (P4-T2, integers only; 0 when the dep is absent in old
+// doubles). period = current UTC calendar-month window; subscription
 // current_period_end wiring deferred to Phase 4. Unknown tenant -> 404,
 // missing header -> 400 via tenantMiddleware. Never 500 from validation.
 import { Router, type Request, type Response, type NextFunction } from 'express';
 import { tenantMiddleware, type TenantRequest } from '../middleware/tenant';
 import * as tenantRepo from '../repos/tenant';
 import * as usageRepo from '../repos/usage';
+import { rollupCost } from '../services/cost';
 
 const router = Router();
 
@@ -16,6 +18,7 @@ export interface UsageDeps {
   findTenant: typeof tenantRepo.findTenant;
   countApiUsage: typeof usageRepo.countUsageByTenant;
   sumTokenUsage: typeof usageRepo.sumTokensByTenant;
+  sumTokenBreakdowns?: typeof usageRepo.sumTokenBreakdownsByTenant;
   getPlanLimits: (planId: string) => Promise<{ apiLimit: number; tokenLimit: number }>;
 }
 
@@ -31,6 +34,7 @@ const prodDeps: UsageDeps = {
   findTenant: tenantRepo.findTenant,
   countApiUsage: usageRepo.countUsageByTenant,
   sumTokenUsage: usageRepo.sumTokensByTenant,
+  sumTokenBreakdowns: usageRepo.sumTokenBreakdownsByTenant,
   getPlanLimits: prodGetPlanLimits,
 };
 
@@ -68,12 +72,20 @@ router.get(
         activeDeps.countApiUsage(tenantId),
         activeDeps.sumTokenUsage(tenantId),
       ]);
+      // P4-T2: cost from per-category breakdown sums (tenant-scoped), single
+      // floor inside rollupCost. Doubles without the dep keep the 0
+      // placeholder; shape stays {tenant,plan,api,tokens,cost_cents,period}.
+      let costCents = 0;
+      if (activeDeps.sumTokenBreakdowns) {
+        const breakdown = await activeDeps.sumTokenBreakdowns(tenantId);
+        costCents = rollupCost([breakdown]);
+      }
       res.status(200).json({
         tenant: tenantId,
         plan: tenant.plan,
         api: { used: apiUsed, limit: limits.apiLimit },
         tokens: { used: tokenUsed, limit: limits.tokenLimit },
-        cost_cents: 0,
+        cost_cents: costCents,
         period: currentPeriod(),
       });
     } catch (err: unknown) {
