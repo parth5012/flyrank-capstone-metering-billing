@@ -5,6 +5,6 @@ test: npm test
 base_url: http://localhost:3000
 endpoints:
   billable: POST /generate
-  usage: GET /usage?tenant_id=demo-tenant
+  usage: "GET /usage with header X-Tenant-Id demo-tenant"
   checkout: POST /checkout
   webhook: POST /webhooks/stripe
