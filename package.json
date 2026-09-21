@@ -10,7 +10,7 @@
     "start": "node dist/src/server.js",
     "dev": "tsx watch src/server.ts",
     "seed": "tsx scripts/seed.ts",
-    "test": "tsx --test tests/scaffold.test.ts tests/validation.test.ts tests/idempotency.test.ts tests/quota.test.ts tests/usage.test.ts tests/tdd.test.ts tests/checkout.test.ts"
+    "test": "tsx --test tests/scaffold.test.ts tests/validation.test.ts tests/idempotency.test.ts tests/quota.test.ts tests/usage.test.ts tests/tdd.test.ts tests/checkout.test.ts tests/webhooks.test.ts"
   },
   "engines": {
     "node": ">=20"
