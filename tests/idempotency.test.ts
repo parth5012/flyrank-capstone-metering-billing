@@ -95,7 +95,7 @@ describe('MeterService.record idempotent insert (P2-T3)', () => {
     ]);
     assert.equal(mem.count(), 1, 'UNIQUE first-write-wins, not app check');
     assert.deepEqual(a.event, b.event);
-    assert.ok(a.inserted !== b.inserted || mem.count() === 1);
+    assert.notEqual(a.inserted, b.inserted, 'exactly one winner: first inserted, replay deduped');
   });
 
   it('token_breakdown JSONB stored for ai_token; api_call otherwise', async () => {
