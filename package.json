@@ -1,7 +1,7 @@
 {
   "name": "flyrank-capstone-metering-billing",
   "version": "0.1.0",
-  "description": "Usage metering and billing engine - scaffold (Phase 1). No billing logic yet.",
+  "description": "Usage metering and billing engine - idempotent metering, quota enforcement, token-aware cost math, Stripe test-mode sync.",
   "type": "commonjs",
   "main": "dist/src/server.js",
   "scripts": {
